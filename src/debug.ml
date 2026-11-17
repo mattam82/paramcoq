@@ -174,10 +174,12 @@ let debug_mutual_inductive_entry =
     let mind_entry_universes_pp =
       match entry.mind_entry_universes with
       | Monomorphic_ind_entry | Template_ind_entry _ -> mt ()
-      | Polymorphic_ind_entry ux ->
+      | Polymorphic_ind_entry (ux, _) ->
          UVars.AbstractContext.pr UnivNames.(sort_printer empty_binders) ux
     in
-    let mind_entry_cumul_pp = bool (Option.has_some entry.mind_entry_variance) in
+    let mind_entry_cumul_pp = bool (match entry.mind_entry_universes with
+        | Polymorphic_ind_entry (_, variances) -> Option.has_some variances
+        | Monomorphic_ind_entry | Template_ind_entry _ -> false) in
     let mind_entry_private_pp =
       match entry.mind_entry_private with
        None -> str "None" | Some true -> str "Some true" | Some false -> str "Some false"

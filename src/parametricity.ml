@@ -1120,40 +1120,40 @@ let fix_template_params order evdr env temp b params =
       | Some (ur, repl) ->
         Array.of_list (ur :: repl)
   in
+  let var_index u = Option.bind (Univ.Universe.level u) Univ.Level.var_index in
   let fold_cstrs (u0, cst, v) accu =
     (* We know that v cannot be template because of the unbounded-from-below property *)
-    let () = assert (not (Option.has_some @@ Univ.Level.var_index v)) in
-    match Univ.Level.var_index u0 with
+    let () = assert (not (Option.has_some @@ var_index v)) in
+    match var_index u0 with
     | None ->
       (* not template, this is technically allowed but dubious *)
       Univ.UnivConstraints.add (u0, cst, v) accu
     | Some u0 -> match Int.Map.find_opt u0 umap with
       | None -> assert false (* unbound template level *)
       | Some (ur, repl) ->
-        let accu = Univ.UnivConstraints.add (ur, cst, v) accu in
-        let fold accu u = Univ.UnivConstraints.add (u, cst, v) accu in
-        List.fold_left fold accu repl
+        let fold accu u = Univ.UnivConstraints.add (Univ.Universe.make u, cst, v) accu in
+        List.fold_left fold accu (ur :: repl)
   in
   let uctx = UVars.AbstractContext.repr temp.template_context in
   let univs = UVars.UContext.instance uctx in
-  let qvars, univs = UVars.Instance.to_array univs in
+  let qvars, univs = UVars.LevelInstance.to_array univs in
   let cstrs = UVars.UContext.constraints uctx in
   let univs = Array.concat @@ Array.map_to_list map_univs univs in
   let cstrs = PConstraints.fold ((fun _ csts -> csts), fold_cstrs) cstrs PConstraints.empty in
   let unames = { UVars.quals = Array.make (Array.length qvars) Anonymous; UVars.univs = Array.make (Array.length univs) Anonymous } in
-  let uctx = UVars.UContext.make unames (UVars.Instance.of_array (qvars,univs), cstrs) in
+  let uctx = UVars.UContext.make unames (UVars.LevelInstance.of_array (qvars,univs), cstrs) in
   let default_univs =
-    let qs, us = UVars.Instance.to_array temp.template_defaults in
+    let qs, us = UVars.LevelInstance.to_array temp.template_defaults in
     let us = Array.concat @@ Array.map_to_list (fun _ -> Array.init (order+1) (fun _ -> UnivGen.fresh_level ())) us in
-    UVars.Instance.of_array (qs,us)
+    UVars.LevelInstance.of_array (qs,us)
   in
   umap, temp.template_concl, (uctx, default_univs), decls
 
-let get_template_instance mib u = match mib.mind_template with
+let get_template_instance mib u = match Declareops.inductive_template mib with
 | None -> u
 | Some templ ->
   let () = assert (UVars.Instance.is_empty u) in
-  templ.template_defaults
+  UVars.Instance.of_level_instance templ.template_defaults
 
 let rec translate_mind_body name order evdr env kn b inst =
   let () = assert (List.is_empty @@ Environ.rel_context env) in
@@ -1192,7 +1192,7 @@ let rec translate_mind_body name order evdr env kn b inst =
   let mind_entry_params_R =
     translate_mind_param order evdr env (CVars.subst_instance_context (get_template_instance b inst) b.mind_params_ctxt)
   in
-  let template_univs, mind_entry_params_R = match b.mind_template with
+  let template_univs, mind_entry_params_R = match Declareops.inductive_template b with
   | None -> None, mind_entry_params_R
   | Some temp ->
     let umap, concl, univs, params = fix_template_params order evdr env temp b mind_entry_params_R in
@@ -1205,20 +1205,20 @@ let rec translate_mind_body name order evdr env kn b inst =
       (Array.to_list b.mind_packets)
   in
   debug_evar_map [`Inductive] "translate_mind, evd = \n" env !evdr;
-  let usubst, univs = match b.mind_universes with
-    | Monomorphic ->
+  let usubst, univs = match Declareops.inductive_is_polymorphic b with
+    | false ->
       begin match template_univs with
       | None -> UVars.empty_sort_subst, Monomorphic_ind_entry
       | Some (_, _, (uctx, default_univs)) ->
         let inst, auctx = UVars.abstract_universes uctx in
         UVars.make_instance_subst inst, Template_ind_entry { uctx = auctx; default_univs }
       end
-    | Polymorphic _ ->
+    | true ->
       let uctx, _ = (Evd.univ_entry ~poly:(PolyFlags.of_univ_poly true) !evdr) in
       match uctx with
-      | Polymorphic_entry uctx ->
+      | Polymorphic_entry (uctx, _) ->
         let inst, auctx = UVars.abstract_universes uctx in
-        UVars.make_instance_subst inst, Polymorphic_ind_entry auctx
+        UVars.make_instance_subst inst, Polymorphic_ind_entry (auctx, None)
       | _ -> assert false
   in
   let mind_entry_inds_R = match template_univs with
@@ -1258,7 +1258,6 @@ let rec translate_mind_body name order evdr env kn b inst =
     mind_entry_params = CVars.subst_univs_level_context usubst mind_entry_params_R;
     mind_entry_inds = mind_entry_inds_R;
     mind_entry_universes = univs;
-    mind_entry_variance = None;
     mind_entry_private = b.mind_private;
   } in
   Debug.debug_mutual_inductive_entry !evdr res;
